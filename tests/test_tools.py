@@ -1,6 +1,8 @@
 import json
+import logging
+from dataclasses import replace
 
-from triage_agent.tools import TOOL_REGISTRY, execute_tool
+from triage_agent.tools import TOOL_REGISTRY, execute_tool, tool_schemas
 
 
 VALID_ARGS = {
@@ -77,3 +79,71 @@ def test_validation_errors_omit_input_echo_and_doc_urls():
     for entry in error_payload(result):
         assert "input" not in entry
         assert "url" not in entry
+
+
+def test_invented_argument_is_rejected_rather_than_dropped():
+    result = execute_tool("query_metrics", {**VALID_ARGS, "region": "us-east-1"})
+
+    assert result.success is False
+    entry = error_payload(result)[0]
+    assert entry["loc"] == ["region"]
+    assert entry["type"] == "extra_forbidden"
+
+
+def test_unit_follows_the_requested_metric():
+    latency = execute_tool("query_metrics", {**VALID_ARGS, "metric": "latency_ms"})
+    saturation = execute_tool("query_metrics", {**VALID_ARGS, "metric": "cpu_percent"})
+
+    assert latency.content["unit"] == "milliseconds"
+    assert saturation.content["unit"] == "percent"
+
+
+def test_handler_exception_becomes_a_failed_result(monkeypatch):
+    def explode(args):
+        raise TimeoutError("metrics backend did not respond")
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "query_metrics",
+        replace(TOOL_REGISTRY["query_metrics"], handler=explode),
+    )
+
+    result = execute_tool("query_metrics", VALID_ARGS)
+
+    assert result.success is False
+    assert result.content is None
+    assert "query_metrics" in result.error
+    assert "TimeoutError" in result.error
+
+
+def test_handler_exception_is_logged_with_a_traceback(monkeypatch, caplog):
+    def explode(args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "query_metrics",
+        replace(TOOL_REGISTRY["query_metrics"], handler=explode),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="triage_agent.tools"):
+        execute_tool("query_metrics", VALID_ARGS)
+
+    assert caplog.records[0].exc_info is not None
+
+
+def test_schemas_are_shaped_for_the_messages_api():
+    schema = next(s for s in tool_schemas() if s["name"] == "query_metrics")
+
+    assert schema["description"] == TOOL_REGISTRY["query_metrics"].description
+    assert set(schema) == {"name", "description", "input_schema", "strict"}
+    assert schema["input_schema"]["type"] == "object"
+    assert "service" in schema["input_schema"]["properties"]
+
+
+def test_strict_schemas_meet_the_api_preconditions():
+    """`strict: true` is rejected unless the schema closes and lists required."""
+    for schema in tool_schemas():
+        assert schema["strict"] is True
+        assert schema["input_schema"]["additionalProperties"] is False
+        assert schema["input_schema"]["required"]
