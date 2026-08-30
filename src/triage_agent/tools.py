@@ -6,6 +6,44 @@ from collections import Counter
 
 tool_attempts: Counter[str] = Counter()
 
+METRIC_DATA: dict[
+    str,
+    tuple[str, list[tuple[int, float]]],
+] = {
+    "error_rate": (
+        "percent",
+        [
+            (25, 0.2),
+            (10, 0.3),
+            (2, 14.1),
+        ],
+    ),
+    "latency_ms": (
+        "milliseconds",
+        [
+            (25, 95.0),
+            (10, 102.0),
+            (2, 108.0),
+        ],
+    ),
+    "request_rate": (
+        "requests_per_second",
+        [
+            (25, 1200.0),
+            (10, 1195.0),
+            (2, 1210.0),
+        ],
+    ),
+    "cpu_percent": (
+        "percent",
+        [
+            (25, 42.0),
+            (10, 44.0),
+            (2, 45.0),
+        ],
+    ),
+}
+
 @dataclass(frozen=True)
 class ToolDefinition:
     name: str
@@ -66,11 +104,20 @@ METRIC_UNITS = {
 }
 
 def query_metrics(args: QueryMetricsArgs) -> dict[str, Any]:
+    _, samples = METRIC_DATA[args.metric]
+    visible_samples = [
+        {
+            "minutes_ago": minutes_ago,
+            "value": value,
+        }
+        for minutes_ago, value in samples
+        if minutes_ago <= args.window_minutes
+    ]
     return {
         "service": args.service,
         "metric": args.metric,
         "window_minutes": args.window_minutes,
-        "values": [0.2, 0.3, 14.1],
+        "samples": visible_samples,
         "unit": METRIC_UNITS[args.metric],
     }
 
