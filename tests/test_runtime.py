@@ -4,6 +4,7 @@ from triage_agent.runtime import (
     ScriptedModel,
     ToolCall,
     run_agent,
+    ToolCallResult,
 )
 
 def test_agent_executes_tool_and_returns_final_answer() -> None:
@@ -31,3 +32,19 @@ def test_agent_executes_tool_and_returns_final_answer() -> None:
     )
 
     assert answer.content == "Checkout error rate increased sharply."
+    assert len(model.received_histories) == 2
+
+    # On the second call, the model received:
+    # user task → tool call → tool result
+    second_history = model.received_histories[1]
+    assert len(second_history) == 3
+    assert isinstance(second_history[1], ToolCall)
+    assert isinstance(second_history[2], ToolCallResult)
+
+    tool_call = second_history[1]
+    tool_call_result = second_history[2]
+    assert tool_call.call_id == "call_1"
+    assert tool_call_result.call_id == "call_1"
+    assert tool_call_result.result.success is True
+    assert tool_call_result.result.content["service"] == "checkout"
+    assert tool_call_result.result.content["metric"] == "error_rate"

@@ -35,8 +35,10 @@ class ModelClient(Protocol):
 class ScriptedModel:
     def __init__(self, decisions: Sequence[ModelDecision]) -> None:
         self._decisions = iter(decisions)
+        self.received_histories: list[list[Any]] = []
 
     def decide(self, history: list[Any]) -> ModelDecision:
+        self.received_histories.append(history.copy())
         return next(self._decisions)
 
 model = ScriptedModel(
