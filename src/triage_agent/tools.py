@@ -1,10 +1,10 @@
-import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from collections import Counter
 
-logger = logging.getLogger(__name__)
+tool_attempts: Counter[str] = Counter()
 
 @dataclass(frozen=True)
 class ToolDefinition:
@@ -18,7 +18,18 @@ class ToolDefinition:
 class ToolResult:
     success: bool
     content: Any = None
+    error_code: str | None = None
     error: str | None = None
+
+@dataclass
+class RunState:
+    model_steps: int = 0
+    # Tracking tool requests because what if the model is making the same incorrect 
+    # tool requests repeatedly.
+    tool_requests: int = 0
+    tool_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
 
 class ToolArgs(BaseModel):
     """Base for every tool's arguments.
@@ -76,13 +87,6 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
 }
 
 def tool_schemas() -> list[dict[str, Any]]:
-    """Render the registry as the Messages API ``tools`` payload.
-
-    Every arguments model derives from :class:`ToolArgs`, so each schema
-    carries ``additionalProperties: false`` and can be declared ``strict``:
-    the API then guarantees ``tool_use.input`` validates against the schema
-    before it ever reaches ``execute_tool``.
-    """
     return [
         {
             "name": tool.name,
@@ -94,15 +98,6 @@ def tool_schemas() -> list[dict[str, Any]]:
     ]
 
 def describe_handler_failure(tool_name: str, exception: Exception) -> str:
-    """Turn a handler crash into a line the model is allowed to read.
-
-    This is the trust boundary: whatever this returns is sent back to the
-    model as tool output. Naming the exception type and message helps the
-    model decide whether to retry, try another tool, or give up -- at the
-    cost of exposing whatever a backend client happened to put in the
-    message. Tighten this if handlers start talking to systems whose
-    errors quote hostnames, credentials, or customer data.
-    """
     return f"{tool_name} failed: {type(exception).__name__}: {exception}"
 
 def execute_tool(
@@ -124,14 +119,10 @@ def execute_tool(
         )
     try:
         result = tool_definition.handler(args_after_validation)
-    except Exception as e:
-        # A handler that raises would otherwise tear down the whole agent
-        # loop. Report it as a failed result so the model can react to it
-        # the same way it reacts to a validation error. BaseException
-        # (KeyboardInterrupt, SystemExit) is deliberately left to propagate.
-        logger.exception("Tool handler %r raised", tool_name)
+    except TimeoutError:
         return ToolResult(
             success=False,
-            error=describe_handler_failure(tool_name, e),
+            error_code="tool_timeout",
+            error=f"{tool_name} timed out",
         )
     return ToolResult(success=True, content=result)
