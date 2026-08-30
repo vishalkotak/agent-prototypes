@@ -32,15 +32,13 @@ class RunState:
     failed_executions: int = 0
 
 class ToolArgs(BaseModel):
-    """Base for every tool's arguments.
+    """Base class for every tool's arguments.
 
-    ``extra="forbid"`` means an argument the model invented is a validation
-    error rather than a silently dropped key, so the model finds out it
-    guessed wrong. It also makes ``model_json_schema()`` emit
-    ``additionalProperties: false``, which the Messages API requires before
-    it will accept a tool definition as ``strict``.
+    Unknown arguments are rejected rather than silently discarded.
+    This configuration also makes model_json_schema() emit
+    additionalProperties: false, as required by OpenAI's strict
+    function-calling mode.
     """
-
     model_config = ConfigDict(extra="forbid")
 
 class QueryMetricsArgs(ToolArgs):

@@ -69,8 +69,12 @@ def run_agent(
             "content": user_task,
         }
     ]
-    for _ in range(limits.max_model_steps):
+    for step in range(limits.max_model_steps):
         decision = model.decide(history)
+        print(
+            f"step={step + 1} "
+            f"decision={decision!r}"
+        )
         if isinstance(decision, FinalAnswer):
             return decision
         history.append(decision)
