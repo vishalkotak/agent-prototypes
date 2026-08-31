@@ -1,3 +1,4 @@
+import json
 import logging
 from uuid import uuid4
 from collections.abc import Sequence
@@ -61,6 +62,14 @@ model = ScriptedModel(
     ]
 )
 
+def tool_call_fingerprint(tool_call: ToolCall) -> tuple[str, str]:
+    normalized_arguments = json.dumps(
+        tool_call.arguments,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return tool_call.tool_name, normalized_arguments
+
 def run_agent(
     model: ModelClient,
     user_task: str,
@@ -78,6 +87,7 @@ def run_agent(
         run_id,
         limits.max_model_steps,
     )
+    seen_tool_calls: set[tuple[str, str]] = set()
     for step in range(1, limits.max_model_steps + 1):
         force_final = step == limits.max_model_steps
         logger.info(
@@ -97,6 +107,17 @@ def run_agent(
                 len(history),
             )
             return decision
+        if force_final and isinstance(decision, ToolCall):
+            logger.error(
+                "event=model_violated_force_final "
+                "run_id=%s step=%d",
+                run_id,
+                step,
+            )
+
+            raise RuntimeError(
+                "Model requested a tool when a final answer was required"
+            )
         logger.info(
             "event=tool_requested "
             "run_id=%s step=%d call_id=%s tool=%s",
@@ -105,11 +126,23 @@ def run_agent(
             decision.call_id,
             decision.tool_name,
         )
+        fingerprint = tool_call_fingerprint(decision)
+        if fingerprint in seen_tool_calls:
+            tool_result = ToolResult(
+                success=False,
+                error_code="duplicate_tool_call",
+                error=(
+                    "This identical tool call was already attempted. "
+                    "Use different arguments or provide the best available answer."
+                ),
+            )
+        else:
+            seen_tool_calls.add(fingerprint)
+            tool_result = execute_tool(
+                tool_name=decision.tool_name,
+                raw_arguments=decision.arguments,
+            )
         history.append(decision)
-        tool_result = execute_tool(
-            tool_name=decision.tool_name,
-            raw_arguments=decision.arguments,
-        )
         logger.info(
             "event=tool_completed "
             "run_id=%s call_id=%s tool=%s success=%s "
@@ -126,17 +159,6 @@ def run_agent(
                 result=tool_result,
             )
         )
-        if force_final and isinstance(decision, ToolCall):
-            logger.error(
-                "event=model_violated_force_final "
-                "run_id=%s step=%d",
-                run_id,
-                step,
-            )
-
-            raise RuntimeError(
-                "Model requested a tool when a final answer was required"
-            )
     logger.error(
         "event=agent_step_limit_exceeded "
         "run_id=%s max_model_steps=%d history_events=%d",
