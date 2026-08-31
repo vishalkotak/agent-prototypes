@@ -1,3 +1,5 @@
+import logging
+from uuid import uuid4
 from collections.abc import Sequence
 from typing import Any, Protocol
 
@@ -6,6 +8,7 @@ from triage_agent.tools import execute_tool, ToolResult
 from dataclasses import dataclass
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -63,24 +66,56 @@ def run_agent(
     user_task: str,
     limits: RunLimits,
 ) -> FinalAnswer:
+    run_id = uuid4().hex[:8]
     history: list[Any] = [
         {
             "role": "user",
             "content": user_task,
         }
     ]
-    for step in range(limits.max_model_steps):
-        decision = model.decide(history)
-        print(
-            f"step={step + 1} "
-            f"decision={decision!r}"
+    logger.info(
+        "event=agent_run_started run_id=%s max_model_steps=%d",
+        run_id,
+        limits.max_model_steps,
+    )
+    for step in range(1, limits.max_model_steps + 1):
+        logger.info(
+            "event=model_step_started run_id=%s step=%d",
+            run_id,
+            step,
         )
+        decision = model.decide(history)
         if isinstance(decision, FinalAnswer):
+            logger.info(
+                "event=agent_run_completed "
+                "run_id=%s step=%d history_events=%d",
+                run_id,
+                step,
+                len(history),
+            )
             return decision
+        logger.info(
+            "event=tool_requested "
+            "run_id=%s step=%d call_id=%s tool=%s",
+            run_id,
+            step,
+            decision.call_id,
+            decision.tool_name,
+        )
         history.append(decision)
         tool_result = execute_tool(
             tool_name=decision.tool_name,
             raw_arguments=decision.arguments,
+        )
+        logger.info(
+            "event=tool_completed "
+            "run_id=%s call_id=%s tool=%s success=%s "
+            "error_code=%s",
+            run_id,
+            decision.call_id,
+            decision.tool_name,
+            tool_result.success,
+            tool_result.error_code,
         )
         history.append(
             ToolCallResult(
@@ -88,4 +123,11 @@ def run_agent(
                 result=tool_result,
             )
         )
+    logger.error(
+        "event=agent_step_limit_exceeded "
+        "run_id=%s max_model_steps=%d history_events=%d",
+        run_id,
+        limits.max_model_steps,
+        len(history),
+    )
     raise RuntimeError("Agent exceeded maximum model steps")

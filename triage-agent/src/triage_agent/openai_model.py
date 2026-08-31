@@ -1,5 +1,7 @@
 import json
 import os
+import logging
+from time import perf_counter
 from collections.abc import Mapping
 from dataclasses import asdict
 from typing import Any
@@ -14,6 +16,8 @@ from triage_agent.runtime import (
     ToolCallResult,
 )
 from triage_agent.tools import ToolDefinition
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTIONS = """
 You are an incident-triage agent.
@@ -80,16 +84,46 @@ class OpenAIModel:
                     ),
                 }
             ]
+        logger.info(
+            "event=openai_request_started "
+            "model=%s continuing=%s",
+            self._model_name,
+            self._previous_response_id is not None,
+        )
+
+        started_at = perf_counter()
         response = self._client.responses.create(**request)
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.info(
+            "event=openai_request_completed "
+            "model=%s response_id=%s duration_ms=%.1f "
+            "output_items=%d",
+            self._model_name,
+            response.id,
+            duration_ms,
+            len(response.output),
+        )
+
         self._previous_response_id = response.id
         for item in response.output:
             if item.type == "function_call":
+                logger.info(
+                    "event=openai_function_call "
+                    "response_id=%s call_id=%s tool=%s",
+                    response.id,
+                    item.call_id,
+                    item.name,
+                )
                 return ToolCall(
                     call_id=item.call_id,
                     tool_name=item.name,
                     arguments=json.loads(item.arguments),
                 )
         if response.output_text:
+            logger.info(
+                "event=openai_final_answer response_id=%s",
+                response.id,
+            )
             return FinalAnswer(content=response.output_text)
         raise RuntimeError(
             "Model returned neither a function call nor a final answer"
