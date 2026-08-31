@@ -6,6 +6,13 @@ from collections import Counter
 
 tool_attempts: Counter[str] = Counter()
 
+METRIC_UNITS = {
+    "latency_ms": "milliseconds",
+    "error_rate": "percent",
+    "request_rate": "requests_per_second",
+    "cpu_percent": "percent",
+}
+
 METRIC_DATA: dict[
     str,
     tuple[str, list[tuple[int, float]]],
@@ -42,6 +49,37 @@ METRIC_DATA: dict[
             (2, 45.0),
         ],
     ),
+}
+
+LOG_DATA: dict[str, list[dict[str, Any]]] = {
+    "checkout": [
+        {
+            "minutes_ago": 12,
+            "level": "INFO",
+            "message": "Checkout configuration refreshed",
+        },
+        {
+            "minutes_ago": 6,
+            "level": "ERROR",
+            "message": (
+                "checkout_error downstream=payments "
+                "reason=timeout status=504"
+            ),
+        },
+        {
+            "minutes_ago": 5,
+            "level": "WARN",
+            "message": (
+                "Payment timeout retries exhausted "
+                "for checkout request"
+            ),
+        },
+        {
+            "minutes_ago": 2,
+            "level": "INFO",
+            "message": "Checkout health check passed",
+        },
+    ]
 }
 
 @dataclass(frozen=True)
@@ -96,12 +134,27 @@ class QueryMetricsArgs(ToolArgs):
         description="Number of recent minutes to query",
     )
 
-METRIC_UNITS = {
-    "latency_ms": "milliseconds",
-    "error_rate": "percent",
-    "request_rate": "requests_per_second",
-    "cpu_percent": "percent",
-}
+class SearchLogsArgs(ToolArgs):
+    service: str = Field(
+        min_length=1,
+        description="Name of the service whose logs should be searched",
+    )
+
+    query: str = Field(
+        min_length=1,
+        max_length=100,
+        description=(
+            "Case-insensitive literal text to search for, "
+            "such as 'error', 'timeout', or 'payment'"
+        ),
+    )
+
+    window_minutes: int = Field(
+        ge=1,
+        le=60,
+        description="Number of recent minutes to search",
+    )
+
 
 def query_metrics(args: QueryMetricsArgs) -> dict[str, Any]:
     _, samples = METRIC_DATA[args.metric]
@@ -121,6 +174,33 @@ def query_metrics(args: QueryMetricsArgs) -> dict[str, Any]:
         "unit": METRIC_UNITS[args.metric],
     }
 
+def search_logs(
+    args: SearchLogsArgs,
+) -> dict[str, Any]:
+    normalized_query = args.query.casefold()
+    matches: list[dict[str, Any]] = []
+
+    for event in LOG_DATA.get(args.service, []):
+        if event["minutes_ago"] > args.window_minutes:
+            continue
+
+        searchable_text = (
+            f'{event["level"]} {event["message"]}'
+        ).casefold()
+        if normalized_query in searchable_text:
+            matches.append(event)
+
+    max_results = 20
+    visible_matches = matches[:max_results]
+
+    return {
+        "service": args.service,
+        "query": args.query,
+        "window_minutes": args.window_minutes,
+        "matches": visible_matches,
+        "truncated": len(matches) > max_results,
+    }
+
 TOOL_REGISTRY: dict[str, ToolDefinition] = {
     "query_metrics": ToolDefinition(
         name="query_metrics",
@@ -128,7 +208,18 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         arguments_model=QueryMetricsArgs,
         handler=query_metrics,
         read_only=True,
-    )
+    ),
+    "search_logs": ToolDefinition(
+        name="search_logs",
+        description=(
+            "Search recent application logs using case-insensitive "
+            "literal text. Use this to investigate errors, timeouts, "
+            "and downstream dependency failures."
+        ),
+        arguments_model=SearchLogsArgs,
+        handler=search_logs,
+        read_only=True,
+    ),
 }
 
 def tool_schemas() -> list[dict[str, Any]]:
