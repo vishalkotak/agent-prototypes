@@ -32,7 +32,7 @@ class RunLimits:
 ModelDecision = ToolCall | FinalAnswer
 
 class ModelClient(Protocol):
-    def decide(self, history: list[Any]) -> ModelDecision:
+    def decide(self, history: list[Any], *, force_final: bool = False,) -> ModelDecision:
         ...
 
 class ScriptedModel:
@@ -40,7 +40,7 @@ class ScriptedModel:
         self._decisions = iter(decisions)
         self.received_histories: list[list[Any]] = []
 
-    def decide(self, history: list[Any]) -> ModelDecision:
+    def decide(self, history: list[Any], *, force_final: bool = False,) -> ModelDecision:
         self.received_histories.append(history.copy())
         return next(self._decisions)
 
@@ -79,12 +79,15 @@ def run_agent(
         limits.max_model_steps,
     )
     for step in range(1, limits.max_model_steps + 1):
+        force_final = step == limits.max_model_steps
         logger.info(
-            "event=model_step_started run_id=%s step=%d",
+            "event=model_step_started "
+            "run_id=%s step=%d force_final=%s",
             run_id,
             step,
+            force_final,
         )
-        decision = model.decide(history)
+        decision = model.decide(history, force_final=force_final)
         if isinstance(decision, FinalAnswer):
             logger.info(
                 "event=agent_run_completed "
@@ -123,6 +126,17 @@ def run_agent(
                 result=tool_result,
             )
         )
+        if force_final and isinstance(decision, ToolCall):
+            logger.error(
+                "event=model_violated_force_final "
+                "run_id=%s step=%d",
+                run_id,
+                step,
+            )
+
+            raise RuntimeError(
+                "Model requested a tool when a final answer was required"
+            )
     logger.error(
         "event=agent_step_limit_exceeded "
         "run_id=%s max_model_steps=%d history_events=%d",

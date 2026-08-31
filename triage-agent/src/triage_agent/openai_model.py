@@ -25,6 +25,10 @@ You are an incident-triage agent.
 Investigate incidents using the provided read-only tools.
 Base conclusions only on evidence returned by tools.
 Do not invent metric values or claim that a tool was executed when it was not.
+Avoid repeating an identical tool call.
+Stop investigating once you have enough evidence for a useful assessment.
+If tools are unavailable, provide the best evidence-based assessment possible
+and clearly state what remains unknown.
 """
 
 def build_openai_tool(
@@ -55,7 +59,7 @@ class OpenAIModel:
         ]
         self._previous_response_id: str | None = None
 
-    def decide(self, history: list[Any]) -> ModelDecision:
+    def decide(self, history: list[Any], *, force_final: bool = False,) -> ModelDecision:
         request: dict[str, Any] = {
             "model": self._model_name,
             "instructions": SYSTEM_INSTRUCTIONS,
@@ -84,6 +88,8 @@ class OpenAIModel:
                     ),
                 }
             ]
+        if force_final:
+            request["tool_choice"] = "none"
         logger.info(
             "event=openai_request_started "
             "model=%s continuing=%s",
